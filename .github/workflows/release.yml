@@ -1,0 +1,121 @@
+# LYZTerm Windows 发布流水线
+#
+# 代码源：Codeup 私有仓库（经 secrets.CODEUP_TOKEN 拉取），GitHub 仓只承载 Release 产物。
+# 触发：打 tag（v0.2.0 形式，SemVer，前缀 v 仅用于 tag）推送即构建并发布 GitHub Release。
+# 产物：Tauri Windows 安装包 —— NSIS *.exe 与 MSI，命名含 x64，
+#       与应用内「检查更新」的资产匹配规则（*x64*.exe 优先、*x64*.msi 回退）保持一致。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的版本号 tag（如 v0.2.0）"
+        required: true
+        default: "v0.1.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          $t = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
+          "tag=$t" >> $env:GITHUB_OUTPUT
+          # 版本比较忽略 v 前缀（应用内检查更新按纯 SemVer 解析）
+          "version=$($t -replace '^v','')" >> $env:GITHUB_OUTPUT
+
+      - name: Clone Codeup private repo into demo
+        env:
+          CODEUP_TOKEN: ${{ secrets.CODEUP_TOKEN }}
+        # 注意仓库地址保持统一
+        run: |
+          git clone "https://oauth2:${env:CODEUP_TOKEN}@codeup.aliyun.com/zheniz0322/Rust/tauri/LYZTerm.git" demo
+        shell: pwsh
+
+      - name: Sync version from tag
+        shell: pwsh
+        working-directory: demo
+        run: |
+          $v = '${{ steps.tag.outputs.version }}'
+          # tauri.conf.json：应用内检查更新的本地版本来源（package_info）
+          $p = 'src-tauri/tauri.conf.json'
+          (Get-Content $p -Raw) -replace '("version":\s*")[^"]+(")', "`${1}$v`${2}" | Set-Content $p -NoNewline
+          # Cargo.toml [package] version 保持同步（仅首个 version 行）
+          $c = 'src-tauri/Cargo.toml'
+          $lines = Get-Content $c
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match '^version = "') { $lines[$i] = "version = `"$v`""; break }
+          }
+          $lines | Set-Content $c
+          "tauri.conf.json / Cargo.toml 版本已同步为 $v"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: demo/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: demo/src-tauri
+
+      - name: Install frontend deps
+        shell: pwsh
+        working-directory: demo
+        run: npm ci
+
+      - name: Build Tauri app (NSIS + MSI)
+        shell: pwsh
+        working-directory: demo
+        run: npm run tauri build -- --bundles nsis,msi
+
+      - name: Collect release notes
+        id: notes
+        shell: pwsh
+        run: |
+          # 更新日志取自 Codeup 仓 docs/RELEASE_NOTES.md，按版本分节（"## v0.2.0" 小节头），
+          # 只截取当前 tag 对应小节作为 Release body —— 应用内「检查更新」弹窗直接展示它；
+          # 文件缺失或无对应小节时回退为 tag 名。
+          $f = 'demo/docs/RELEASE_NOTES.md'
+          $tag = '${{ steps.tag.outputs.tag }}'
+          $body = $null
+          if (Test-Path $f) {
+            $inSection = $false
+            $acc = @()
+            foreach ($l in (Get-Content $f)) {
+              if ($l -match ("^##\s+" + [regex]::Escape($tag) + "\s*$")) { $inSection = $true; continue }
+              if ($inSection -and $l -match '^##\s') { break }
+              if ($inSection) { $acc += $l }
+            }
+            $body = ($acc -join "`n").Trim()
+          }
+          if (-not $body) { $body = "LYZTerm $tag" }
+          $body | Out-File -FilePath notes.md -Encoding utf8
+          "body_file=notes.md" >> $env:GITHUB_OUTPUT
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: LYZTerm ${{ steps.tag.outputs.tag }}
+          body_path: ${{ steps.notes.outputs.body_file }}
+          # 正式版本不勾选 prerelease；需要发预发布时手动把 Release 标记为 prerelease，
+          # 应用内默认不推送预发布更新，可在「检查更新」弹窗开启「包含预发布版本」查看
+          prerelease: false
+          files: |
+            demo/src-tauri/target/release/bundle/nsis/*.exe
+            demo/src-tauri/target/release/bundle/msi/*.msi
