@@ -2,8 +2,8 @@
 #
 # 代码源：Codeup 私有仓库（经 secrets.CODEUP_TOKEN 拉取），GitHub 仓只承载 Release 产物。
 # 触发：打 tag（v0.2.0 形式，SemVer，前缀 v 仅用于 tag）推送即构建并发布 GitHub Release。
-# 产物：Tauri Windows 安装包 —— NSIS *.exe 与 MSI，命名含 x64，
-#       与应用内「检查更新」的资产匹配规则（*x64*.exe 优先、*x64*.msi 回退）保持一致。
+# 产物：仅 Tauri Windows NSIS 安装包（*_x64-setup.exe，命名含 x64），不产出 MSI，
+#       与应用内「检查更新」的资产匹配规则一致（exe 命中；msi 回退逻辑保留备用）。
 name: Release
 
 on:
@@ -78,10 +78,10 @@ jobs:
         working-directory: demo
         run: npm ci
 
-      - name: Build Tauri app (NSIS + MSI)
+      - name: Build Tauri app (NSIS)
         shell: pwsh
         working-directory: demo
-        run: npm run tauri build -- --bundles nsis,msi
+        run: npm run tauri build -- --bundles nsis
 
       - name: Collect release notes
         id: notes
@@ -118,4 +118,3 @@ jobs:
           prerelease: false
           files: |
             demo/src-tauri/target/release/bundle/nsis/*.exe
-            demo/src-tauri/target/release/bundle/msi/*.msi
