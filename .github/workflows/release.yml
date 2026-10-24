@@ -114,7 +114,7 @@ jobs:
           name: LYZTerm ${{ steps.tag.outputs.tag }}
           body_path: ${{ steps.notes.outputs.body_file }}
           # 正式版本不勾选 prerelease；需要发预发布时手动把 Release 标记为 prerelease，
-          # 应用内默认不推送预发布更新，可在「检查更新」弹窗开启「包含预发布版本」查看
+          # 应用内「检查更新」走 latest 接口只认正式版，预发布不会推送给用户
           prerelease: false
           files: |
             demo/src-tauri/target/release/bundle/nsis/*.exe
