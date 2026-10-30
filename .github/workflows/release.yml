@@ -1,10 +1,4 @@
-# LYZTerm Windows 发布流水线
-#
-# 代码源：Codeup 私有仓库（经 secrets.CODEUP_TOKEN 拉取），GitHub 仓只承载 Release 产物。
-# 触发：打 tag（v0.2.0 形式，SemVer，前缀 v 仅用于 tag）推送即构建并发布 GitHub Release。
-# 产物：仅 Tauri Windows NSIS 安装包（*_x64-setup.exe，命名含 x64），不产出 MSI，
-#       与应用内「检查更新」的资产匹配规则一致（exe 命中；msi 回退逻辑保留备用）。
-name: Release
+name: Release windows,ubuntu,macos
 
 on:
   push:
@@ -12,27 +6,41 @@ on:
       - "v*"
   workflow_dispatch:
     inputs:
-      tag:
-        description: "要发布的版本号 tag（如 v0.2.0）"
-        required: true
-        default: "v0.1.0"
-
+    tag_name:
+      description: '要创建 / 更新的 Release tag（手动触发时填写；tag 推送触发可留空）'
+      required: false
+      default: ''
+      type: string   # 显式声明单行文本框，网页显示输入框
+    release_body:
+      description: "Release 更新说明，可粘贴换行文本"
+      required: false
+      default: ''
+      type: string
 permissions:
   contents: write
-
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  release_main:  # ✅ 修改job ID为 release_main，needs才能识别
+    strategy:
+      # Linux 侧首次构建可能踩到环境问题；别让它把 Windows 的发布一起取消掉，
+      # 否则一次失败会连本来没问题的 Windows 安装包也发不出去。
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            args: --bundles nsis
+            label: Windows
+          - os: ubuntu-22.04
+            args: --bundles appimage
+            label: Linux
+          - os: macos-14
+            args: --target aarch64-apple-darwin --bundles app,dmg
+            label: macOS aarch64
+          - os: macos-14
+            args: --target x86_64-apple-darwin --bundles app,dmg
+            label: macOS x86_64
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Resolve release tag
-        id: tag
-        shell: pwsh
-        run: |
-          $t = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { '${{ github.ref_name }}' }
-          "tag=$t" >> $env:GITHUB_OUTPUT
-          # 版本比较忽略 v 前缀（应用内检查更新按纯 SemVer 解析）
-          "version=$($t -replace '^v','')" >> $env:GITHUB_OUTPUT
-
       - name: Clone Codeup private repo into demo
         env:
           CODEUP_TOKEN: ${{ secrets.CODEUP_TOKEN }}
@@ -40,60 +48,57 @@ jobs:
         run: |
           git clone "https://oauth2:${env:CODEUP_TOKEN}@codeup.aliyun.com/zheniz0322/Rust/tauri/LYZTerm.git" demo
         shell: pwsh
-
-      - name: Sync version from tag
-        shell: pwsh
-        working-directory: demo
+      # Tauri v2 在 Linux 上编译 WebView 界面需要 webkit2gtk 4.1；
+      # 托盘图标（build_tray）需要 appindicator；打 AppImage 需要 patchelf。
+      # 包清单来自官方 v2 文档 v2.tauri.app/start/prerequisites。
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
         run: |
-          $v = '${{ steps.tag.outputs.version }}'
-          # tauri.conf.json：应用内检查更新的本地版本来源（package_info）
-          $p = 'src-tauri/tauri.conf.json'
-          (Get-Content $p -Raw) -replace '("version":\s*")[^"]+(")', "`${1}$v`${2}" | Set-Content $p -NoNewline
-          # Cargo.toml [package] version 保持同步（仅首个 version 行）
-          $c = 'src-tauri/Cargo.toml'
-          $lines = Get-Content $c
-          for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match '^version = "') { $lines[$i] = "version = `"$v`""; break }
-          }
-          $lines | Set-Content $c
-          "tauri.conf.json / Cargo.toml 版本已同步为 $v"
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: npm
-          cache-dependency-path: demo/package-lock.json
+          node-version: 22
 
-      - name: Setup Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+      
+      - name: Add macOS cross targets
+        if: startsWith(matrix.os, 'macos')
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Rust cache
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: demo/src-tauri
-
-      - name: Install frontend deps
-        shell: pwsh
+      - name: Install frontend dependencies
         working-directory: demo
-        run: npm ci
-
-      - name: Build Tauri app (NSIS)
-        shell: pwsh
-        working-directory: demo
-        run: npm run tauri build -- --bundles nsis
+        run: npm install
 
       - name: Collect release notes
         id: notes
         shell: pwsh
+        env:
+          # 手动触发时可直接在页面上粘贴更新说明，优先于仓库里的更新日志文件
+          MANUAL_BODY: ${{ inputs.release_body }}
         run: |
           # 更新日志取自 Codeup 仓 docs/RELEASE_NOTES.md，按版本分节（"## v0.2.0" 小节头），
           # 只截取当前 tag 对应小节作为 Release body —— 应用内「检查更新」弹窗直接展示它；
           # 文件缺失或无对应小节时回退为 tag 名。
           $f = 'demo/docs/RELEASE_NOTES.md'
-          $tag = '${{ steps.tag.outputs.tag }}'
+          $tag = '${{ inputs.tag_name || github.ref_name }}'
           $body = $null
-          if (Test-Path $f) {
+          if ($env:MANUAL_BODY) {
+            $body = $env:MANUAL_BODY.Trim()
+          } elseif (Test-Path $f) {
             $inSection = $false
             $acc = @()
             foreach ($l in (Get-Content $f)) {
@@ -104,17 +109,44 @@ jobs:
             $body = ($acc -join "`n").Trim()
           }
           if (-not $body) { $body = "LYZTerm $tag" }
-          $body | Out-File -FilePath notes.md -Encoding utf8
-          "body_file=notes.md" >> $env:GITHUB_OUTPUT
+          # 多行内容用 heredoc 形式写入 GITHUB_OUTPUT，后续 releaseBody 直接引用
+          "body<<__NOTES_EOF__" >> $env:GITHUB_OUTPUT
+          $body >> $env:GITHUB_OUTPUT
+          "__NOTES_EOF__" >> $env:GITHUB_OUTPUT
 
-      - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+      # tauri-action 会：① 在 projectPath 下执行 beforeBuildCommand(npm run build)
+      # ② 打各平台的安装包（按 args 的 --bundles 覆盖）③ 上传到本次 tag 的 GitHub Release。
+      #
+      # projectPath: demo 是关键：本工作流没有 actions/checkout，源码被 clone 到
+      # 子目录 demo/ 里，而 tauri-action 默认在当前工作目录（空的 workspace 根）找工程，
+      # 不设 projectPath 会因找不到 package.json/src-tauri 直接失败。
+      #
+      # includeUpdaterJson 置 false：本应用的自动更新是「自研模块直连 GitHub Releases API」
+      # （见 src-tauri/src/update.rs，按 SemVer 匹配 *_x64-setup.exe），不使用 Tauri 内置
+      # updater，生成 latest.json / 签名毫无用处，反而因缺 createUpdaterArtifacts/签名密钥
+      # 导致该步骤报错。安装包本身仍会正常上传到 Release，正是应用 check_update 要消费的东西。
+      #
+      # args 里用 --bundles 按平台覆盖打包目标：tauri.conf.json 的
+      # `bundle.targets` 写的是 ["nsis"]（Windows 专属），若不覆盖，
+      # 在 Linux 上会尝试打 NSIS 并直接失败。
+      - name: Build & Publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: LYZTerm ${{ steps.tag.outputs.tag }}
-          body_path: ${{ steps.notes.outputs.body_file }}
-          # 正式版本不勾选 prerelease；需要发预发布时手动把 Release 标记为 prerelease，
-          # 应用内「检查更新」走 latest 接口只认正式版，预发布不会推送给用户
-          prerelease: false
-          files: |
-            demo/src-tauri/target/release/bundle/nsis/*.exe
+          # 源码 clone 到 demo/，必须显式指向该子目录，否则在空根目录构建失败。
+          projectPath: demo
+          tagName: ${{ inputs.tag_name || github.ref_name }}
+          releaseName: "LYZTerm ${{ inputs.tag_name || github.ref_name }}" # ✅ 统一名称
+          # ── 更新说明（来自 RELEASE_NOTES.md，无需手改）─────────────────────
+          # 显示在 GitHub Release 页面；应用内「发现新版本」弹窗也读取该 Release 的正文展示。
+          # 支持 Markdown（前端会渲染标题、列表、行内代码与粗体）。
+          # 内容取自上一步 Collect release notes 的 body 输出
+          # （Codeup 仓 docs/RELEASE_NOTES.md 中与当前 tag 对应的小节；
+          #  手动触发时可用 release_body 输入覆盖）。
+          releaseBody: ${{ steps.notes.outputs.body }}
+          # 本应用用自研更新，不需要 Tauri 的 latest.json / updater 签名。
+          includeUpdaterJson: false
+          # 打包目标按平台在 matrix 里定好（Windows=nsis / Linux=appimage /
+          # macOS=app+--target），这里原样透传。
+          args: ${{ matrix.args }}
