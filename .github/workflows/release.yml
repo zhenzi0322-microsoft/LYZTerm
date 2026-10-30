@@ -51,6 +51,12 @@ jobs:
       # Tauri v2 在 Linux 上编译 WebView 界面需要 webkit2gtk 4.1；
       # 托盘图标（build_tray）需要 appindicator；打 AppImage 需要 patchelf。
       # 包清单来自官方 v2 文档 v2.tauri.app/start/prerequisites。
+      #
+      # 历史误读：X11 桌面上“AppImage 打不开中文输入法”曾经被归因到这里的依赖缺失，
+      # 其实依赖已齐。真正原因在运行时：wry 在 set_webview_settings() 里无条件调
+      # WebKitInputMethodContext::set_enable_preedit(false)（tauri#5986 遗留规避），
+      # 直接拒送 composition 事件到 DOM。修复不在 CI，而在应用侧建窗后把开关翻回来，
+      # 详见 src-tauri/src/ime_linux.rs::enable_inline_preedit 与 lib.rs 里三处调用。
       - name: Install Linux system dependencies
         if: runner.os == 'Linux'
         run: |
@@ -90,7 +96,7 @@ jobs:
           # 手动触发时可直接在页面上粘贴更新说明，优先于仓库里的更新日志文件
           MANUAL_BODY: ${{ inputs.release_body }}
         run: |
-          # 更新日志取自 Codeup 仓 docs/RELEASE_NOTES.md，按版本分节（"## v0.2.0" 小节头），
+          # 更新日志取自 Codeup 仓 docs/RELEASE_NOTES.md, 按版本分节（"## v0.2.0" 小节头），
           # 只截取当前 tag 对应小节作为 Release body —— 应用内「检查更新」弹窗直接展示它；
           # 文件缺失或无对应小节时回退为 tag 名。
           $f = 'demo/docs/RELEASE_NOTES.md'
@@ -109,7 +115,7 @@ jobs:
             $body = ($acc -join "`n").Trim()
           }
           if (-not $body) { $body = "LYZTerm $tag" }
-          # 多行内容用 heredoc 形式写入 GITHUB_OUTPUT，后续 releaseBody 直接引用
+          # 多行内容用 heredoc 形式写入 GITHUB_OUTPUT, 后续 releaseBody 直接引用
           "body<<__NOTES_EOF__" >> $env:GITHUB_OUTPUT
           $body >> $env:GITHUB_OUTPUT
           "__NOTES_EOF__" >> $env:GITHUB_OUTPUT
