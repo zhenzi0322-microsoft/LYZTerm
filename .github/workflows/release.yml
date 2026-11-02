@@ -32,10 +32,10 @@ jobs:
           - os: ubuntu-22.04
             args: --bundles appimage
             label: Linux
-          - os: macos-14
+          - os: macos-15
             args: --target aarch64-apple-darwin --bundles app,dmg
             label: macOS aarch64
-          - os: macos-14
+          - os: macos-15
             args: --target x86_64-apple-darwin --bundles app,dmg
             label: macOS x86_64
     name: Build ${{ matrix.label }}
