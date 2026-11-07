@@ -138,7 +138,7 @@ jobs:
       - name: Build & Publish
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.GITHUB_TOKEN }}
         with:
           # 源码 clone 到 demo/，必须显式指向该子目录，否则在空根目录构建失败。
           projectPath: demo
